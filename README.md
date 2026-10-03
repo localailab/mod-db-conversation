@@ -1,4 +1,4 @@
-# mcp-db-conversation
+# mod-db-conversation
 
 Claude Codeの会話履歴を**すべて自動で保存**し、**プロジェクト単位で検索**できるようにするClaude Code mod。
 
@@ -25,8 +25,8 @@ gitリポジトリでない場所や、まだコミットがないリポジト�
 ```bash
 ollama pull bge-m3   # 意味検索用のモデル（Ollamaは起動しておく）
 
-git clone https://github.com/<owner>/mcp-db-conversation.git
-cd mcp-db-conversation
+git clone https://github.com/localailab/mod-db-conversation.git
+cd mod-db-conversation
 npm install
 npm run build
 npm run backfill     # これまでの会話をまとめて取り込む（任意）
@@ -42,12 +42,12 @@ npm run backfill     # これまでの会話をまとめて取り込む（任意
 claude --plugin-dir "$(pwd)/mod/conversation-memory"
 ```
 
-すべてのプロジェクトで常に読み込むには、`~/.claude/settings.json` に書く。`/path/to/mcp-db-conversation` はcloneした場所に置き換える:
+すべてのプロジェクトで常に読み込むには、`~/.claude/settings.json` に書く。`/path/to/mod-db-conversation` はcloneした場所に置き換える:
 
 ```json
 {
   "env": {
-    "CLAUDE_CODE_PLUGIN_DIRS": "/path/to/mcp-db-conversation/mod/conversation-memory"
+    "CLAUDE_CODE_PLUGIN_DIRS": "/path/to/mod-db-conversation/mod/conversation-memory"
   }
 }
 ```
@@ -118,6 +118,19 @@ Node.jsのバージョンを切り替えて使っている場合（nvmなど）�
 - 履歴の最初のコミットを書き換えると（rebaseなど）、別のプロジェクトになる
 
 検索は、今のセッションのプロジェクトだけが対象。Claudeにproject_idを選ばせないので、間違えて別のプロジェクトの記憶を読んだり消したりすることはない。他のプロジェクトの会話は、明示的に `all_projects: true` を指定したときだけ読める。削除は常に今のプロジェクトだけが対象。
+
+### 会話を別のプロジェクトに移す
+
+リポジトリを作り直したときなど、会話を別のプロジェクトに移したいときは `move-session` を使う。
+
+```bash
+node dist/cli.js move-session <セッションID> <移し先のリポジトリのディレクトリ>
+```
+
+- そのセッションのメッセージが、移し先のプロジェクトに付け替わる。コミットも移し先のリポジトリの履歴で計算し直す（移し先の最初のコミットより前のメッセージは「before first commit」になる）
+- 移したあとにそのセッションで続けた会話も、移し先に保存される
+- 移したことは記録され、`rebuild` しても保たれる
+- セッションIDは `/recall` の一覧で確認できる
 
 ## 会話とコミットの対応
 
@@ -212,7 +225,9 @@ cli.js ingest            stdin: hook JSON ({ transcript_path, cwd })。取り込
 cli.js backfill [dir]    ~/.claude/projects 以下の会話をすべて取り込み、ベクトル化する
 cli.js embed             まだベクトルのないメッセージをベクトル化する
 cli.js warm              Ollamaに埋め込みモデルを読み込ませておく
-cli.js rebuild           今のDBを backup-<時刻>/ に移し、すべての会話から作り直す
+cli.js rebuild           今のDBを backup-<時刻>/ に移し、すべての会話から作り直す（move-sessionの記録は引き継ぐ）
+cli.js move-session <セッションID> <ディレクトリ>
+                         セッションを、そのディレクトリのプロジェクトに移す
 cli.js search            stdin: { cwd, query, include_tools?, all_projects?, exclude_session_id?, limit? }
 cli.js related           stdin: { cwd, text, exclude_session_id?, limit?, min_coverage? }
 cli.js get               stdin: { cwd, session_id, around_uuid?, window?, offset?, limit? }

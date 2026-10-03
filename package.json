@@ -1,0 +1,26 @@
+{
+  "name": "mod-db-conversation",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "tsc",
+    "backfill": "node dist/cli.js backfill"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Claude Code conversation memory: auto-save and project-scoped search, as a Claude Code mod",
+  "dependencies": {
+    "@lancedb/lancedb": "^0.39.0",
+    "apache-arrow": "^18.1.0",
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
+  },
+  "type": "module",
+  "bin": {
+    "conv-memory": "dist/cli.js"
+  }
+}

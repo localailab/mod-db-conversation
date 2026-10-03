@@ -1,0 +1,25 @@
+{
+  "name": "conversation-memory",
+  "version": "0.1.0",
+  "description": "Saves every conversation to a per-project SQLite memory and lets Claude search it",
+  "userConfig": {
+    "cliPath": {
+      "type": "string",
+      "title": "Memory core CLI",
+      "description": "Path to dist/cli.js of mod-db-conversation. Leave empty to use the one in this repository",
+      "default": ""
+    },
+    "nodePath": {
+      "type": "string",
+      "title": "Node.js",
+      "description": "The node executable that runs the CLI",
+      "default": "node"
+    },
+    "autoContext": {
+      "type": "boolean",
+      "title": "Attach related past conversations",
+      "description": "On each prompt, attach up to 3 closely related excerpts from earlier conversations of this project",
+      "default": true
+    }
+  }
+}
