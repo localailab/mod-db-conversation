@@ -1,5 +1,6 @@
 # mod-db-conversation
 
+verβ　動作保証無し
 Claude Codeの会話履歴を**すべて自動で保存**し、**プロジェクト単位で検索**できるようにするClaude Code mod。
 
 - 会話は、Claudeが応答を終えるたびに自動で保存される。Claudeが保存を忘れることはない
