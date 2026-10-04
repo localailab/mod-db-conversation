@@ -21,7 +21,6 @@ export type SearchOptions = {
   query: string;
   include_tools?: boolean;
   exclude_session_id?: string;
-  all_projects?: boolean;
   limit?: number;
 };
 
@@ -131,12 +130,12 @@ async function semanticSearch(
   db: DB,
   projectId: string,
   text: string,
-  o: { all_projects?: boolean; exclude_session_id?: string; maxDistance: number; limit: number; timeoutMs: number },
+  o: { exclude_session_id?: string; maxDistance: number; limit: number; timeoutMs: number },
 ): Promise<{ hits: Hit[]; status: string }> {
   let vectorHits;
   try {
     vectorHits = await searchVectors(text, {
-      projectId: o.all_projects ? undefined : projectId,
+      projectId,
       excludeSessionId: o.exclude_session_id,
       limit: o.limit * 3, // room for the length filter below
       timeoutMs: o.timeoutMs,
@@ -194,13 +193,12 @@ export function getSession(
     offset?: number;
     limit?: number;
     include_tools?: boolean;
-    all_projects?: boolean;
   },
 ) {
   const session = db.prepare("SELECT * FROM sessions WHERE session_id = ?").get(o.session_id) as
     | { project_id: string }
     | undefined;
-  if (!session || (!o.all_projects && session.project_id !== projectId)) {
+  if (!session || session.project_id !== projectId) {
     return { error: `session not found in this project: ${o.session_id}` };
   }
 
@@ -230,14 +228,10 @@ export function getSession(
 export function listSessions(
   db: DB,
   projectId: string,
-  o: { title_contains?: string; all_projects?: boolean; limit?: number },
+  o: { title_contains?: string; limit?: number },
 ) {
-  const where: string[] = [];
-  const params: unknown[] = [];
-  if (!o.all_projects) {
-    where.push("s.project_id = ?");
-    params.push(projectId);
-  }
+  const where = ["s.project_id = ?"];
+  const params: unknown[] = [projectId];
   if (o.title_contains) {
     where.push("s.title LIKE ? ESCAPE '\\'");
     params.push(`%${likeEscape(o.title_contains)}%`);
@@ -253,7 +247,7 @@ export function listSessions(
               (SELECT group_concat(DISTINCT m.model) FROM messages m
                WHERE m.session_id = s.session_id AND m.model != '<synthetic>') AS models
        FROM sessions s LEFT JOIN projects p ON p.id = s.project_id
-       ${where.length ? "WHERE " + where.join(" AND ") : ""}
+       WHERE ${where.join(" AND ")}
        ORDER BY s.updated_at DESC LIMIT ?`,
     )
     .all(...params, o.limit ?? 20);
@@ -281,13 +275,11 @@ function addFilters(
   where: string[],
   params: unknown[],
   projectId: string,
-  o: { include_tools?: boolean; all_projects?: boolean; exclude_session_id?: string },
+  o: { include_tools?: boolean; exclude_session_id?: string },
 ) {
   if (!o.include_tools) where.push("m.kind = 'text'");
-  if (!o.all_projects) {
-    where.push("m.project_id = ?");
-    params.push(projectId);
-  }
+  where.push("m.project_id = ?");
+  params.push(projectId);
   if (o.exclude_session_id) {
     where.push("m.session_id != ?");
     params.push(o.exclude_session_id);

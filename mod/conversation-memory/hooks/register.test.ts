@@ -4,7 +4,7 @@ import type { On } from 'claude-code'
 const CLI = '/opt/memory/dist/cli.js'
 const OPTIONS = { options: { cliPath: CLI, nodePath: 'node', autoContext: true } }
 
-type Run = { argv: readonly string[]; stdin: any }
+type Run = { argv: readonly string[]; stdin: any; env?: Record<string, string> }
 
 // Stands in for the session and the memory core CLI; records each CLI run.
 function host(on: On, reply: (command: string, stdin: any) => unknown) {
@@ -15,7 +15,7 @@ function host(on: On, reply: (command: string, stdin: any) => unknown) {
   on('ui.log', () => ({ value: undefined }))
   on('process.run', ($, e) => {
     const stdin = e.init?.stdin ? JSON.parse(e.init.stdin) : undefined
-    runs.push({ argv: e.argv, stdin })
+    runs.push({ argv: e.argv, stdin, env: e.init?.env })
     const out = JSON.stringify(reply(String(e.argv[2]), stdin))
     return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -36,7 +36,7 @@ describe('saving', () => {
     expect(runs.length).toBe(2)
     for (const run of runs) {
       expect(run.argv).toEqual(['node', CLI, 'ingest'])
-      expect(run.stdin).toEqual({ transcript_path: '/t/s.jsonl', cwd: '/repo' })
+      expect(run.stdin).toEqual({ transcript_path: '/t/s.jsonl', cwd: '/repo', root: '/repo' })
     }
   })
 
@@ -122,6 +122,7 @@ describe('finding the core', () => {
 describe('outside a git repository', () => {
   test('the status line says nothing was saved', OPTIONS, async ($, on) => {
     const statuses: unknown[] = []
+    on('session.root', () => ({ value: '/tmp' }))
     on('ui.status', ($, e) => {
       statuses.push(e)
       return { value: undefined }
@@ -134,5 +135,25 @@ describe('outside a git repository', () => {
     on('classic.Stop', () => ({}))
     await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t/s.jsonl', cwd: '/tmp' } as any)
     expect(JSON.stringify(statuses)).toContain('not saved: works only in a git repository')
+  })
+})
+
+describe('storage mode', () => {
+  test('shared is the default and reaches the CLI', OPTIONS, async ($, on) => {
+    const runs = host(on, () => ({ project: 'repo', results: [] }))
+    await $.tool.call({ tool: 'mcp__conversation-memory__search', query: 'x' } as any)
+    expect(runs[0]!.env).toEqual({ CONV_MEMORY_STORAGE: 'shared' })
+  })
+
+  test('repo mode reaches every CLI run, and saving names the session root', { options: { ...OPTIONS.options, storage: 'repo' } }, async ($, on) => {
+    const runs = host(on, () => ({ inserted: 1, project: 'repo', results: [] }))
+    on('classic.Stop', () => ({}))
+    on('clock.after', () => ({ value: undefined }))
+    // the hook's cwd may be a subfolder; the DB is picked by the session root
+    await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t/s.jsonl', cwd: '/repo/src' } as any)
+    await $.tool.call({ tool: 'mcp__conversation-memory__search', query: 'x' } as any)
+    expect(runs.length).toBeGreaterThan(1)
+    for (const run of runs) expect(run.env).toEqual({ CONV_MEMORY_STORAGE: 'repo' })
+    expect(runs[0]!.stdin).toEqual({ transcript_path: '/t/s.jsonl', cwd: '/repo/src', root: '/repo' })
   })
 })

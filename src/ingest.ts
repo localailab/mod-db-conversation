@@ -159,14 +159,16 @@ export function fillModels(db: DB): number {
  * Incremental: resumes from the byte offset recorded last time.
  * Each message is assigned to the project of its cwd (fallbackCwd when the entry has none)
  * and to the commit it was based on. Messages outside a git repository with commits are
- * skipped (counted in `skipped`), and are not picked up later.
+ * skipped (counted in `skipped`), and are not picked up later. With `onlyProjectId` (repo mode),
+ * messages of other projects are left out too (counted in `other_project`).
  */
 export function ingestTranscript(
   db: DB,
   transcriptPath: string,
   fallbackCwd?: string,
-): { inserted: number; skipped: number } {
-  const none = { inserted: 0, skipped: 0 };
+  onlyProjectId?: string,
+): { inserted: number; skipped: number; other_project: number } {
+  const none = { inserted: 0, skipped: 0, other_project: 0 };
   if (!fs.existsSync(transcriptPath)) return none;
 
   const state = db
@@ -217,6 +219,7 @@ export function ingestTranscript(
 
   let inserted = 0;
   let skipped = 0;
+  let otherProject = 0;
   db.transaction(() => {
     for (const line of lines) {
       if (!line.trim()) continue;
@@ -238,6 +241,10 @@ export function ingestTranscript(
           skipped++; // not in a git repository with commits
           continue;
         }
+        if (onlyProjectId && project.id !== onlyProjectId) {
+          otherProject++; // repo mode: belongs in another repository's DB
+          continue;
+        }
         saveProject(db, project);
         row.project_id = project.id;
         row.git_commit = commitAt(project.root_path, row.git_branch, row.timestamp);
@@ -247,5 +254,5 @@ export function ingestTranscript(
     }
     saveOffset.run(transcriptPath, offset + lastNl + 1);
   })();
-  return { inserted, skipped };
+  return { inserted, skipped, other_project: otherProject };
 }

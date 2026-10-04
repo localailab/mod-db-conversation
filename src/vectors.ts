@@ -1,13 +1,14 @@
 // Message vectors in LanceDB. SQLite stays the source of truth: a vector row carries
 // only the message id and the fields searches filter on, and is rebuilt from SQLite.
 import * as lancedb from "@lancedb/lancedb";
-import os from "node:os";
-import path from "node:path";
 import type { DB } from "./db.js";
 import { EMBED_MODEL, embed } from "./embed.js";
 
-export const VECTORS_PATH =
-  process.env.CONV_MEMORY_VECTORS ?? path.join(os.homedir(), ".claude-memory", "vectors");
+// Set once per CLI run from the resolved storage (see storage.ts).
+let vectorsPath = "";
+export function useVectors(dir: string) {
+  vectorsPath = dir;
+}
 
 // One table per model, so switching models never mixes vector spaces or dimensions.
 const TABLE = `messages_${EMBED_MODEL.replace(/[^A-Za-z0-9_]/g, "_")}`;
@@ -20,12 +21,12 @@ export type VectorHit = { id: number; distance: number };
 const quote = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
 async function openTable(): Promise<lancedb.Table | null> {
-  const conn = await lancedb.connect(VECTORS_PATH);
+  const conn = await lancedb.connect(vectorsPath);
   return (await conn.tableNames()).includes(TABLE) ? conn.openTable(TABLE) : null;
 }
 
 async function upsert(rows: VectorRow[]) {
-  const conn = await lancedb.connect(VECTORS_PATH);
+  const conn = await lancedb.connect(vectorsPath);
   if (!(await conn.tableNames()).includes(TABLE)) {
     await conn.createTable(TABLE, rows);
     return;
@@ -75,17 +76,16 @@ export async function embedPending(
 /** Nearest messages to the text, by cosine distance (0 = same direction). Empty if no vectors or no Ollama. */
 export async function searchVectors(
   text: string,
-  o: { projectId?: string; excludeSessionId?: string; limit: number; timeoutMs: number },
+  o: { projectId: string; excludeSessionId?: string; limit: number; timeoutMs: number },
 ): Promise<VectorHit[]> {
   const table = await openTable();
   if (!table) return [];
   const [vector] = await embed([text], o.timeoutMs);
   const where = [
-    o.projectId && `project_id = ${quote(o.projectId)}`,
+    `project_id = ${quote(o.projectId)}`,
     o.excludeSessionId && `session_id != ${quote(o.excludeSessionId)}`,
   ].filter(Boolean);
-  let q = table.vectorSearch(vector!).distanceType("cosine").limit(o.limit);
-  if (where.length) q = q.where(where.join(" AND "));
+  const q = table.vectorSearch(vector!).distanceType("cosine").limit(o.limit).where(where.join(" AND "));
   const rows = (await q.select(["id"]).toArray()) as { id: number; _distance: number }[];
   return rows.map((r) => ({ id: Number(r.id), distance: r._distance }));
 }

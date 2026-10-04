@@ -15,16 +15,25 @@
 //   conv-memory delete            stdin: { cwd, session_id }        → JSON
 //
 // `cwd` picks the project: the git repository it is in, identified by its root commit.
-// Outside a git repository with commits, these commands fail. PROJECT_ID overrides the id.
+// Outside a git repository with commits, these commands fail. PROJECT_ID overrides the id
+// (shared mode only).
+//
+// Storage (CONV_MEMORY_STORAGE, see storage.ts): "shared" keeps one DB for every project;
+// "repo" uses <repo>/.claude/conversation-memory/ of the repository the session runs in
+// (`root` in stdin, else `cwd`, else the current directory). Either way, reads cover only
+// the current project.
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DB_PATH, openDb } from "./db.js";
+import { type DB, checkOwner, openDb } from "./db.js";
 import { ingestTranscript, moveSession } from "./ingest.js";
 import { NO_PROJECT, resolveProject } from "./project.js";
 import { deleteSession, getSession, listSessions, related, search } from "./search.js";
-import { VECTORS_PATH, deleteSessionVectors, embedPending, moveSessionVectors, warm } from "./vectors.js";
+import { type Storage, resolveStorage } from "./storage.js";
+import { deleteSessionVectors, embedPending, moveSessionVectors, useVectors, warm } from "./vectors.js";
+
+const STDIN_COMMANDS = new Set(["ingest", "search", "related", "get", "list", "delete"]);
 
 function readStdin(): any {
   const text = fs.readFileSync(0, "utf8").trim();
@@ -40,19 +49,19 @@ function* walk(dir: string): Generator<string> {
 }
 
 /** Moves the DB and the vectors into <DB dir>/backup-<time>/ so the next open starts empty. */
-function moveAside(): string {
-  const backup = path.join(path.dirname(DB_PATH), `backup-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+function moveAside(storage: Storage): string {
+  const backup = path.join(path.dirname(storage.db), `backup-${new Date().toISOString().replace(/[:.]/g, "-")}`);
   fs.mkdirSync(backup, { recursive: true });
-  for (const p of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`, VECTORS_PATH]) {
+  for (const p of [storage.db, `${storage.db}-wal`, `${storage.db}-shm`, storage.vectors]) {
     if (fs.existsSync(p)) fs.renameSync(p, path.join(backup, path.basename(p)));
   }
   return backup;
 }
 
 /** session_moves of the current DB, read without migrating it (it may be an older version). */
-function readMoves(): { session_id: string; target_path: string }[] {
-  if (!fs.existsSync(DB_PATH)) return [];
-  const old = new Database(DB_PATH, { readonly: true });
+function readMoves(dbPath: string): { session_id: string; target_path: string }[] {
+  if (!fs.existsSync(dbPath)) return [];
+  const old = new Database(dbPath, { readonly: true });
   try {
     const has = old.prepare("SELECT 1 FROM sqlite_master WHERE name = 'session_moves'").get();
     return has ? (old.prepare("SELECT session_id, target_path FROM session_moves").all() as any[]) : [];
@@ -61,51 +70,87 @@ function readMoves(): { session_id: string; target_path: string }[] {
   }
 }
 
-async function backfill(db: ReturnType<typeof openDb>, root: string) {
+async function backfill(db: DB, storage: Storage, root: string) {
   let files = 0;
   let inserted = 0;
   let skipped = 0;
+  let otherProject = 0;
   for (const file of walk(root)) {
-    const r = ingestTranscript(db, file);
+    const r = ingestTranscript(db, file, undefined, storage.owner?.id);
     inserted += r.inserted;
     skipped += r.skipped;
+    otherProject += r.other_project;
     files++;
   }
   const progress = (done: number, total: number) => process.stderr.write(`\rembedding ${done}/${total}`);
   const { error: embed_error, ...embedding } = await embedPending(db, { onProgress: progress });
   process.stderr.write("\n");
-  return { db: DB_PATH, vectors: VECTORS_PATH, files, inserted, skipped, ...embedding, embed_error };
+  return {
+    mode: storage.mode,
+    db: storage.db,
+    vectors: storage.vectors,
+    files,
+    inserted,
+    skipped,
+    ...(storage.owner ? { other_project: otherProject } : {}),
+    ...embedding,
+    embed_error,
+  };
+}
+
+function open(storage: Storage): DB {
+  useVectors(storage.vectors);
+  const db = openDb(storage.db);
+  try {
+    checkOwner(db, storage);
+  } catch (e) {
+    db.close();
+    throw e;
+  }
+  return db;
 }
 
 async function run(command: string | undefined, args: string[]): Promise<unknown> {
+  if (command === "warm") {
+    await warm(); // touches only Ollama, not the storage
+    return { ok: true };
+  }
+  const input = STDIN_COMMANDS.has(command ?? "") ? readStdin() : {};
+  const storage = resolveStorage(input.root ?? input.cwd ?? process.cwd());
+  const repoMode = storage.mode === "repo";
   const projectsDir = args[0] ?? path.join(os.homedir(), ".claude", "projects");
+
   if (command === "rebuild") {
-    const moves = readMoves();
-    const backup = moveAside();
-    const db = openDb();
+    const moves = repoMode ? [] : readMoves(storage.db);
+    const backup = moveAside(storage);
+    const db = open(storage);
     try {
       // session moves are the person's decisions, not derived from transcripts: carry them over
       const keep = db.prepare("INSERT INTO session_moves (session_id, target_path) VALUES (?, ?)");
       for (const m of moves) keep.run(m.session_id, m.target_path);
-      return { backup, moves: moves.length, ...(await backfill(db, projectsDir)) };
+      return { backup, moves: moves.length, ...(await backfill(db, storage, projectsDir)) };
     } finally {
       db.close();
     }
   }
-  const db = openDb();
+  if (command === "move-session" && repoMode) {
+    return { error: "move-session is not available in repo storage mode: each repository has its own DB" };
+  }
+
+  const db = open(storage);
   try {
     switch (command) {
       case "ingest": {
-        const { transcript_path, cwd } = readStdin();
+        const { transcript_path, cwd } = input;
         if (!transcript_path) return { error: "transcript_path is required" };
-        const saved = ingestTranscript(db, transcript_path, cwd);
+        const saved = ingestTranscript(db, transcript_path, cwd, storage.owner?.id);
         // a hook waits for this, so embedding gets a short budget; leftovers go next time
         // an embedding failure (Ollama not running) is not a failed save, so it is not `error`
         const { error: embed_error, ...embedding } = await embedPending(db, { limit: 200, timeBudgetMs: 8_000 });
         return { ...saved, ...embedding, embed_error };
       }
       case "backfill":
-        return await backfill(db, projectsDir);
+        return await backfill(db, storage, projectsDir);
       case "move-session": {
         const [sessionId, dir] = args;
         if (!sessionId || !dir) return { error: "usage: move-session <session_id> <dir>" };
@@ -121,22 +166,21 @@ async function run(command: string | undefined, args: string[]): Promise<unknown
       }
       case "embed":
         return await embedPending(db, { onProgress: (d, n) => process.stderr.write(`\rembedding ${d}/${n}`) });
-      case "warm":
-        await warm();
-        return { ok: true };
       case "search":
       case "related":
       case "get":
       case "list":
       case "delete": {
-        const input = readStdin();
         const project = resolveProject(input.cwd ?? process.cwd());
         if (!project) return { error: NO_PROJECT };
-        const projectId = process.env.PROJECT_ID ?? project.id;
-        if (command === "search") return { project: project.name, ...(await search(db, projectId, input)) };
-        if (command === "related") return { project: project.name, ...(await related(db, projectId, input)) };
+        // repo mode: the DB's owner, whatever the cwd; shared mode: the cwd's project
+        const projectId = storage.owner?.id ?? process.env.PROJECT_ID ?? project.id;
+        if (command === "search") return { project: project.name, mode: storage.mode, ...(await search(db, projectId, input)) };
+        if (command === "related") return { project: project.name, mode: storage.mode, ...(await related(db, projectId, input)) };
         if (command === "get") return getSession(db, projectId, input);
-        if (command === "list") return { project: { ...project, id: projectId }, sessions: listSessions(db, projectId, input) };
+        if (command === "list") {
+          return { project: { ...project, id: projectId }, mode: storage.mode, sessions: listSessions(db, projectId, input) };
+        }
         const deleted = deleteSession(db, projectId, input.session_id);
         if (!("error" in deleted)) await deleteSessionVectors(input.session_id);
         return deleted;

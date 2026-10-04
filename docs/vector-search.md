@@ -1,11 +1,11 @@
 # ベクトル検索（Ollama + LanceDB）
 
-conversation-memory の意味検索のしくみと設定。modの使い方は [README](../README.md) を参照。
+conversation-memory の意味検索のしくみと設定。modの使い方は [使い方](usage.md) を参照。
 
 ## 全体像
 
 ```
-保存時:  メッセージ ──[Ollama: bge-m3]──→ ベクトル ──→ LanceDB（~/.claude-memory/vectors）
+保存時:  メッセージ ──[Ollama: bge-m3]──→ ベクトル ──→ LanceDB（vectors/。場所は保存モードで決まる）
 検索時:  検索語やプロンプト ──[Ollama: bge-m3]──→ ベクトル ──→ LanceDBで近いものを探す ──→ 本文はSQLiteから引く
 ```
 
@@ -107,7 +107,7 @@ const RRF_K = 60;
 ## データ
 
 ```
-LanceDB（~/.claude-memory/vectors）
+LanceDB（vectors/。場所は保存モードで決まる）
 messages_<モデル名>
   id          = SQLiteの messages.id
   project_id  検索をプロジェクトで絞るため
@@ -134,7 +134,7 @@ node dist/cli.js embed
 
 | 変数 | 内容 | デフォルト |
 |---|---|---|
-| `CONV_MEMORY_VECTORS` | LanceDBのディレクトリ（指定の仕方は [README](../README.md#データの保存場所)） | `~/.claude-memory/vectors` |
+| `CONV_MEMORY_VECTORS` | LanceDBのディレクトリ（`shared` モードのみ。指定の仕方は [保存モードとデータ](storage.md#保存場所)） | `~/.claude-memory/vectors` |
 | `CONV_MEMORY_EMBED_MODEL` | Ollamaの埋め込みモデル | `bge-m3` |
 | `OLLAMA_HOST` | Ollamaの場所 | `127.0.0.1:11434` |
 

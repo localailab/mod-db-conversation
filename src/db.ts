@@ -1,11 +1,8 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fillModels } from "./ingest.js";
-
-export const DB_PATH =
-  process.env.CONV_MEMORY_DB ?? path.join(os.homedir(), ".claude-memory", "conversations.db");
+import type { Storage } from "./storage.js";
 
 export type DB = Database.Database;
 
@@ -13,7 +10,7 @@ export type DB = Database.Database;
 // 3: messages.model (migrated in place from 2)
 const SCHEMA_VERSION = 3;
 
-export function openDb(dbPath = DB_PATH): DB {
+export function openDb(dbPath: string): DB {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
@@ -98,6 +95,12 @@ function migrate(db: DB) {
       target_path TEXT NOT NULL
     );
 
+    -- facts about the DB itself; owner_project_id: the repository a repo-mode DB belongs to
+    CREATE TABLE IF NOT EXISTS meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
     -- how far each transcript file has been ingested (byte offset), for incremental hook runs
     CREATE TABLE IF NOT EXISTS ingest_state (
       transcript_path TEXT PRIMARY KEY,
@@ -107,4 +110,18 @@ function migrate(db: DB) {
   // messages saved before version 3 get their model from the transcripts already read
   if (hasData && version === 2) fillModels(db);
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
+}
+
+/**
+ * Repo mode: record the owning repository on first use, and refuse a DB that belongs to
+ * another repository (e.g. a copied folder). Shared mode has no owner.
+ */
+export function checkOwner(db: DB, storage: Storage) {
+  if (!storage.owner) return;
+  const row = db.prepare("SELECT value FROM meta WHERE key = 'owner_project_id'").get() as { value: string } | undefined;
+  if (!row) {
+    db.prepare("INSERT INTO meta (key, value) VALUES ('owner_project_id', ?)").run(storage.owner.id);
+  } else if (row.value !== storage.owner.id) {
+    throw new Error(`DB belongs to another repository (project ${row.value}), refusing to use it: ${storage.db}`);
+  }
 }

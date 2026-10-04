@@ -15,6 +15,12 @@
       "description": "The node executable that runs the CLI",
       "default": "node"
     },
+    "storage": {
+      "type": "string",
+      "title": "Storage mode",
+      "description": "shared: one DB for every project in ~/.claude-memory, separated by project id. repo: a DB in each repository's .claude/conversation-memory, and a session reads only its own repository's DB",
+      "default": "shared"
+    },
     "autoContext": {
       "type": "boolean",
       "title": "Attach related past conversations",

@@ -14,6 +14,8 @@ type Json = Record<string, any>
 let node = 'node'
 let cli = ''
 let autoContext = true
+// "shared": one DB for every project (~/.claude-memory); "repo": <repo>/.claude/conversation-memory only
+let storage = 'shared'
 
 // Without a configured cliPath, the core is found relative to this mod: <repo>/mod/conversation-memory → <repo>/dist/cli.js
 function cliPath($: EngineInterface) {
@@ -21,7 +23,11 @@ function cliPath($: EngineInterface) {
 }
 
 async function core($: EngineInterface, command: string, input: Json, timeoutMs = 15_000): Promise<Json> {
-  const r = await $.process.run([node, cliPath($), command], { stdin: JSON.stringify(input), timeoutMs })
+  const r = await $.process.run([node, cliPath($), command], {
+    stdin: JSON.stringify(input),
+    env: { CONV_MEMORY_STORAGE: storage },
+    timeoutMs,
+  })
   try {
     return JSON.parse(r.stdout)
   } catch {
@@ -38,9 +44,10 @@ async function where($: EngineInterface) {
   return { cwd: await $.session.root() }
 }
 
-async function ingest($: EngineInterface, e: { transcript_path: string; cwd: string }) {
+// root (the session's) picks the repository whose DB is used in repo mode
+async function ingest($: EngineInterface, e: { transcript_path: string; cwd: string }, root: string) {
   try {
-    const r = await core($, 'ingest', { transcript_path: e.transcript_path, cwd: e.cwd })
+    const r = await core($, 'ingest', { transcript_path: e.transcript_path, cwd: e.cwd, root })
     // Saving works without Ollama; only the vectors for meaning-based search wait for it.
     $.ui.status(
       r.error
@@ -60,20 +67,22 @@ export const register: Register = (on, options) => {
   node = String(options.nodePath ?? 'node')
   cli = String(options.cliPath ?? '')
   autoContext = options.autoContext !== false
+  storage = String(options.storage ?? 'shared').trim() || 'shared'
 
   on('classic.Stop', async ($, e, next) => {
-    await ingest($, e)
+    const root = await $.session.root()
+    await ingest($, e, root)
     // Stop fires just before the turn's final reply reaches the transcript file,
     // so look again shortly after to save that reply in this turn, not the next.
-    $.clock.after(3_000, () => ingest($, e))
+    $.clock.after(3_000, () => ingest($, e, root))
     return next(e)
   })
   on('classic.PreCompact', async ($, e, next) => {
-    await ingest($, e)
+    await ingest($, e, await $.session.root())
     return next(e)
   })
   on('classic.SessionEnd', async ($, e, next) => {
-    await ingest($, e)
+    await ingest($, e, await $.session.root())
     return next(e)
   })
 
@@ -96,7 +105,6 @@ export const register: Register = (on, options) => {
         properties: {
           query: { type: 'string', description: 'Keywords (space-separated) or a short phrase' },
           include_tools: { type: 'boolean', description: 'Also search tool calls/results (default false)' },
-          all_projects: { type: 'boolean', description: 'Search every project, only when the user asks (default false)' },
           limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Default 10' },
         },
         required: ['query'],
@@ -117,7 +125,6 @@ export const register: Register = (on, options) => {
           offset: { type: 'integer', minimum: 0 },
           limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Default 50' },
           include_tools: { type: 'boolean' },
-          all_projects: { type: 'boolean' },
         },
         required: ['session_id'],
       },
@@ -126,12 +133,11 @@ export const register: Register = (on, options) => {
       name: 'list_sessions',
       description:
         'List saved conversations of this project, newest first, with titles and the commits they spanned ' +
-        '(first_commit, last_commit).',
+        '(first_commit, last_commit) and the models that answered (models).',
       inputSchema: {
         type: 'object',
         properties: {
           title_contains: { type: 'string' },
-          all_projects: { type: 'boolean' },
           limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Default 20' },
         },
       },
@@ -155,15 +161,15 @@ export const register: Register = (on, options) => {
   const answer = (r: Json) => ({ result: JSON.stringify(r, null, 2) })
 
   on('tool.call', { tool: 'mcp__conversation-memory__search' }, async ($, e) => {
-    const input = pick(e, ['query', 'include_tools', 'all_projects', 'limit'])
+    const input = pick(e, ['query', 'include_tools', 'limit'])
     return answer(await core($, 'search', { ...(await where($)), ...input, exclude_session_id: await $.session.id() }))
   })
   on('tool.call', { tool: 'mcp__conversation-memory__get_session' }, async ($, e) => {
-    const input = pick(e, ['session_id', 'around_uuid', 'window', 'offset', 'limit', 'include_tools', 'all_projects'])
+    const input = pick(e, ['session_id', 'around_uuid', 'window', 'offset', 'limit', 'include_tools'])
     return answer(await core($, 'get', { ...(await where($)), ...input }))
   })
   on('tool.call', { tool: 'mcp__conversation-memory__list_sessions' }, async ($, e) => {
-    const input = pick(e, ['title_contains', 'all_projects', 'limit'])
+    const input = pick(e, ['title_contains', 'limit'])
     return answer(await core($, 'list', { ...(await where($)), ...input }))
   })
   on('tool.call', { tool: 'mcp__conversation-memory__delete_session' }, async ($, e) => {
