@@ -205,7 +205,7 @@ export function getSession(
   }
 
   const kindFilter = o.include_tools ? "" : "AND kind = 'text'";
-  const cols = "uuid, role, kind, timestamp, substr(git_commit, 1, 12) AS git_commit, content";
+  const cols = "uuid, role, kind, timestamp, substr(git_commit, 1, 12) AS git_commit, model, content";
   if (o.around_uuid) {
     const anchor = db
       .prepare("SELECT id FROM messages WHERE uuid = ? AND session_id = ?")
@@ -249,7 +249,9 @@ export function listSessions(
               (SELECT substr(m.git_commit, 1, 12) FROM messages m WHERE m.session_id = s.session_id
                ORDER BY m.id LIMIT 1) AS first_commit,
               (SELECT substr(m.git_commit, 1, 12) FROM messages m WHERE m.session_id = s.session_id
-               ORDER BY m.id DESC LIMIT 1) AS last_commit
+               ORDER BY m.id DESC LIMIT 1) AS last_commit,
+              (SELECT group_concat(DISTINCT m.model) FROM messages m
+               WHERE m.session_id = s.session_id AND m.model != '<synthetic>') AS models
        FROM sessions s LEFT JOIN projects p ON p.id = s.project_id
        ${where.length ? "WHERE " + where.join(" AND ") : ""}
        ORDER BY s.updated_at DESC LIMIT ?`,
@@ -271,7 +273,7 @@ export function deleteSession(db: DB, projectId: string, sessionId: string) {
 }
 
 const RESULT_COLS = `m.id, m.uuid, m.session_id, s.title, p.name AS project, m.role, m.timestamp, m.git_branch,
-  substr(m.git_commit, 1, 12) AS git_commit`;
+  substr(m.git_commit, 1, 12) AS git_commit, m.model`;
 const RESULT_JOINS = `LEFT JOIN sessions s ON s.session_id = m.session_id
                       LEFT JOIN projects p ON p.id = m.project_id`;
 

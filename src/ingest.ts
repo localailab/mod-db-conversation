@@ -19,6 +19,7 @@ type Row = {
   cwd: string | null;
   git_branch: string | null;
   is_sidechain: number;
+  model: string | null;
 };
 
 function truncate(s: string, n = TOOL_TEXT_LIMIT) {
@@ -57,6 +58,8 @@ export function parseEntry(entry: any): Row[] {
     cwd: entry.cwd ?? null,
     git_branch: entry.gitBranch ?? null,
     is_sidechain: entry.isSidechain ? 1 : 0,
+    // as the API reported it; "<synthetic>" marks messages Claude Code wrote itself
+    model: entry.type === "assistant" && typeof msg.model === "string" ? msg.model : null,
   };
 
   const blocks: Block[] =
@@ -117,6 +120,41 @@ export function moveSession(db: DB, sessionId: string, project: Project, targetD
 }
 
 /**
+ * Fill messages.model for messages saved before the column existed, from the part of each
+ * transcript already ingested. Only updates existing rows, so deleted sessions stay deleted.
+ */
+export function fillModels(db: DB): number {
+  const transcripts = db.prepare("SELECT transcript_path, byte_offset FROM ingest_state").all() as {
+    transcript_path: string;
+    byte_offset: number;
+  }[];
+  const setModel = db.prepare("UPDATE messages SET model = ? WHERE uuid = ? AND model IS NULL");
+  let updated = 0;
+  db.transaction(() => {
+    for (const t of transcripts) {
+      if (!fs.existsSync(t.transcript_path)) continue;
+      const fd = fs.openSync(t.transcript_path, "r");
+      const buf = Buffer.alloc(Math.min(t.byte_offset, fs.fstatSync(fd).size));
+      fs.readSync(fd, buf, 0, buf.length, 0);
+      fs.closeSync(fd);
+      for (const line of buf.toString("utf8").split("\n")) {
+        if (!line.includes('"model"')) continue;
+        let entry: any;
+        try {
+          entry = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        for (const row of parseEntry(entry)) {
+          if (row.model) updated += setModel.run(row.model, row.uuid).changes;
+        }
+      }
+    }
+  })();
+  return updated;
+}
+
+/**
  * Ingest new lines of a Claude Code transcript (~/.claude/projects/<proj>/<session>.jsonl).
  * Incremental: resumes from the byte offset recorded last time.
  * Each message is assigned to the project of its cwd (fallbackCwd when the entry has none)
@@ -169,8 +207,8 @@ export function ingestTranscript(
   `);
   const insertMsg = db.prepare(`
     INSERT OR IGNORE INTO messages
-      (uuid, project_id, session_id, role, kind, content, timestamp, cwd, git_branch, git_commit, is_sidechain)
-    VALUES (@uuid, @project_id, @session_id, @role, @kind, @content, @timestamp, @cwd, @git_branch, @git_commit, @is_sidechain)
+      (uuid, project_id, session_id, role, kind, content, timestamp, cwd, git_branch, git_commit, is_sidechain, model)
+    VALUES (@uuid, @project_id, @session_id, @role, @kind, @content, @timestamp, @cwd, @git_branch, @git_commit, @is_sidechain, @model)
   `);
   const saveOffset = db.prepare(`
     INSERT INTO ingest_state (transcript_path, byte_offset) VALUES (?, ?)

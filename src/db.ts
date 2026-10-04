@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fillModels } from "./ingest.js";
 
 export const DB_PATH =
   process.env.CONV_MEMORY_DB ?? path.join(os.homedir(), ".claude-memory", "conversations.db");
@@ -9,7 +10,8 @@ export const DB_PATH =
 export type DB = Database.Database;
 
 // 2: project id = root commit hash, messages.git_commit
-const SCHEMA_VERSION = 2;
+// 3: messages.model (migrated in place from 2)
+const SCHEMA_VERSION = 3;
 
 export function openDb(dbPath = DB_PATH): DB {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -24,11 +26,17 @@ export function openDb(dbPath = DB_PATH): DB {
 function migrate(db: DB) {
   const version = db.pragma("user_version", { simple: true }) as number;
   const hasData = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'messages'").get();
-  if (hasData && version < SCHEMA_VERSION) {
+  if (hasData && version < 2) {
     throw new Error(
       "the memory DB was made by an older version (projects were identified differently); " +
         "run `node dist/cli.js rebuild` to rebuild it from Claude Code's transcripts",
     );
+  }
+
+  // the column check makes a rerun safe if a previous migration stopped before user_version
+  const columns = db.pragma("table_info(messages)") as { name: string }[];
+  if (hasData && version === 2 && !columns.some((c) => c.name === "model")) {
+    db.exec("ALTER TABLE messages ADD COLUMN model TEXT");
   }
 
   db.exec(`
@@ -64,7 +72,8 @@ function migrate(db: DB) {
       git_branch  TEXT,
       git_commit  TEXT,              -- newest commit of the branch at the message's time
       is_sidechain INTEGER NOT NULL DEFAULT 0,
-      embedded_model TEXT            -- model of the message's vector in LanceDB; NULL = not embedded yet
+      embedded_model TEXT,           -- model of the message's vector in LanceDB; NULL = not embedded yet
+      model       TEXT               -- model that wrote an assistant message, as the API reported it; NULL for user
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_messages_project ON messages(project_id, timestamp);
@@ -95,5 +104,7 @@ function migrate(db: DB) {
       byte_offset     INTEGER NOT NULL
     );
   `);
+  // messages saved before version 3 get their model from the transcripts already read
+  if (hasData && version === 2) fillModels(db);
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
 }

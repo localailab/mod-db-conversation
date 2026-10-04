@@ -105,7 +105,8 @@ export const register: Register = (on, options) => {
     await $.tool.register({
       name: 'get_session',
       description:
-        'Read a saved conversation in order, each message with the git_commit it was based on. ' +
+        'Read a saved conversation in order, each message with the git_commit it was based on ' +
+        'and, for assistant messages, the model that wrote it. ' +
         'Pass around_uuid from a search result to get the messages around it.',
       inputSchema: {
         type: 'object',
